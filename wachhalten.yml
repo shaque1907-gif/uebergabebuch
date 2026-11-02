@@ -1,0 +1,14 @@
+# Kostenlose Supabase-Projekte schlafen nach 7 Tagen ohne Nutzung ein – dieser Job weckt die Datenbank alle 3 Tage kurz an.
+name: Datenbank wachhalten
+on:
+  schedule: [{ cron: '0 6 */3 * *' }]
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          url=$(grep -oP "url: '\K[^']+" index.html)
+          key=$(grep -oP "key: '\K[^']+" index.html)
+          curl -fsS "$url/rest/v1/kinder?select=name" -H "apikey: $key" -H "Authorization: Bearer $key"

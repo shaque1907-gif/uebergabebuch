@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2f6f5e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Übergabebuch</title>
+<style>
+  :root { --bg:#f4f6f5; --karte:#fff; --text:#1d2522; --leise:#66736e; --akzent:#2f6f5e; --rand:#dde3e0; --warn:#b3541e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141917; --karte:#1e2522; --text:#e6ece9; --leise:#9aa8a2; --akzent:#6cbfa6; --rand:#2e3834; --warn:#f0965a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, -apple-system, sans-serif; }
+  header { position:sticky; top:0; background:var(--akzent); color:#fff; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; z-index:2; }
+  header h1 { font-size:18px; margin:0; }
+  header button { background:none; border:1px solid #fff8; color:#fff; }
+  nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:var(--karte); border-top:1px solid var(--rand); z-index:2; padding-bottom:env(safe-area-inset-bottom); }
+  nav button { flex:1; border:0; border-radius:0; background:none; padding:10px 2px; font-size:12px; color:var(--leise); }
+  nav button span { display:block; font-size:20px; }
+  nav button.aktiv { color:var(--akzent); font-weight:600; }
+  main { padding:12px 16px 96px; max-width:720px; margin:0 auto; }
+  .karte { background:var(--karte); border:1px solid var(--rand); border-radius:12px; padding:12px 14px; margin:0 0 12px; }
+  .kopf { display:flex; justify-content:space-between; gap:8px; font-weight:600; }
+  .meta { color:var(--leise); font-size:13px; }
+  .feld { margin:6px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .feld b { font-weight:600; }
+  .nachtrag { border-left:3px solid var(--akzent); padding:4px 0 4px 10px; margin-top:10px; }
+  .status { display:inline-block; font-size:12px; padding:1px 8px; border-radius:10px; background:var(--rand); }
+  .vergangen { opacity:.65; }
+  button, .knopf { font:inherit; border:1px solid var(--akzent); background:var(--akzent); color:#fff; border-radius:8px; padding:8px 14px; cursor:pointer; text-decoration:none; display:inline-block; }
+  button.zweit { background:none; color:var(--akzent); }
+  .aktionen { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .aktionen button { padding:5px 10px; font-size:14px; }
+  label { display:block; margin:12px 0 4px; font-weight:600; font-size:14px; }
+  input, textarea, select { width:100%; font:inherit; padding:9px 10px; border:1px solid var(--rand); border-radius:8px; background:var(--karte); color:var(--text); }
+  textarea { min-height:70px; }
+  .reihe { display:flex; gap:14px; flex-wrap:wrap; }
+  .reihe label { font-weight:normal; display:flex; gap:6px; align-items:center; margin:4px 0; }
+  .reihe input { width:auto; }
+  .fotos { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .fotos img { width:84px; height:84px; object-fit:cover; border-radius:6px; border:1px solid var(--rand); }
+  .leer { color:var(--leise); text-align:center; padding:30px 0; }
+  .fehler { color:var(--warn); }
+  h2 { font-size:16px; margin:18px 0 8px; color:var(--leise); }
+  dialog { border:0; border-radius:14px; padding:16px; width:min(560px, 94vw); max-height:90vh; background:var(--karte); color:var(--text); }
+  dialog::backdrop { background:#0007; }
+  a { color:var(--akzent); }
+  #druck { display:none; }
+  @media print { header, nav, main, dialog { display:none !important; } #druck { display:block; } body { background:#fff; color:#000; } .karte { break-inside:avoid; } }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+<header><h1>Übergabebuch</h1><button id="neuLaden" hidden onclick="laden()">↻</button></header>
+<main id="inhalt"><p class="leer">Lädt …</p></main>
+<nav id="nav" hidden></nav>
+<dialog id="dlg"></dialog>
+<div id="druck"></div>
+
+<script>
+// Öffentliche Projekt-Daten von Supabase (Settings → API). Der "anon"-Schlüssel darf öffentlich sein –
+// geschützt wird alles durch die Regeln in setup.sql.
+const KONFIG = { url: 'https://iikqnlmqcwewkoughfld.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa3FubG1xY3dld2tvdWdoZmxkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM2MzU2OTYsImV4cCI6MjEwOTIxMTY5Nn0.HyC6g0WAw39qHsOyQZkyxoqpoAc1a4M3rVWmLDRUeCo' };
+const SPEICHER_GRENZE = 1024 ** 3; // 1 GB im kostenlosen Tarif
+
+const sb = window.supabase?.createClient(KONFIG.url, KONFIG.key);
+const S = { tab: 'uebergabe', eltern: [], kinder: [], eintraege: [], ich: '' };
+
+const TABS = [
+  ['uebergabe', 'Übergaben', '🔁'], ['termin', 'Termine', '📅'], ['arzttermin', 'Arzt', '🩺'],
+  ['kontakt', 'Kontakte', '📞'], ['mehr', 'Mehr', '⋯'],
+];
+const NAME = { uebergabe: 'Übergabe', termin: 'Termin', arzttermin: 'Arzttermin', kontakt: 'Kontakt', nachtrag: 'Nachtrag' };
+const KATEGORIEN = ['Arzt', 'Eltern von Freunden', 'Schule / Kita', 'Sonstiges'];
+// [schlüssel, beschriftung, art] – art: datum | kinder | elternteil | wer | kategorie | zeile | tel | text | status | fotos
+const FELDER = {
+  uebergabe: [['datum', 'Datum & Uhrzeit', 'datum'], ['kinder', 'Kinder', 'kinder'], ['an', 'Übergeben an', 'elternteil'],
+    ['gesundheit', 'Gesundheit / Medikamente', 'text'], ['schule', 'Schule / Kita', 'text'], ['sachen', 'Mitgegebene Sachen', 'text'],
+    ['termine', 'Anstehende Termine / Verabredungen', 'text'], ['notiz', 'Sonstiges', 'text'], ['fotos', 'Fotos', 'fotos']],
+  termin: [['datum', 'Datum & Uhrzeit', 'datum'], ['kinder', 'Kinder', 'kinder'], ['was', 'Was (z. B. Verabredung, Geburtstag)', 'zeile'],
+    ['wo', 'Wo', 'zeile'], ['mit', 'Mit wem / Telefon', 'zeile'], ['wer', 'Wer bringt / holt', 'wer'], ['notiz', 'Notiz', 'text']],
+  arzttermin: [['datum', 'Datum & Uhrzeit', 'datum'], ['kinder', 'Kinder', 'kinder'], ['arzt', 'Arzt / Praxis', 'arzt'],
+    ['grund', 'Grund', 'zeile'], ['wer', 'Wer geht hin', 'wer'], ['notiz', 'Notiz', 'text'], ['fotos', 'Fotos', 'fotos']],
+  kontakt: [['kategorie', 'Kategorie', 'kategorie'], ['name', 'Name', 'zeile'], ['kinder', 'Gehört zu', 'kinder'],
+    ['telefon', 'Telefon', 'tel'], ['adresse', 'Adresse', 'zeile'], ['notiz', 'Notiz', 'text']],
+  nachtrag: [['status', 'Status', 'status'], ['text', 'Nachtrag / Ergebnis', 'text'], ['fotos', 'Fotos', 'fotos']],
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const zeit = (iso) => new Date(iso).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+const tagZeit = (s) => s ? new Date(s).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+const jetztLokal = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+const nachtraegeVon = (id) => S.eintraege.filter((e) => e.typ === 'nachtrag' && e.bezug === id).sort((a, b) => a.id - b.id);
+const letzterStatus = (id) => nachtraegeVon(id).map((n) => n.daten.status).filter(Boolean).pop();
+
+// ---------- Anmeldung ----------
+async function start() {
+  if (!sb) return fehler('Verbindung zur Datenbank fehlt (Internet?).');
+  const { data } = await sb.auth.getSession();
+  data.session ? laden() : anmeldeMaske();
+}
+
+function anmeldeMaske(meldung = '') {
+  $('nav').hidden = true; $('neuLaden').hidden = true;
+  $('inhalt').innerHTML = `<div class="karte"><form id="login">
+    <label for="em">E-Mail</label><input id="em" type="email" autocomplete="username" required>
+    <label for="pw">Passwort</label><input id="pw" type="password" autocomplete="current-password" required>
+    <p class="fehler">${esc(meldung)}</p><button>Anmelden</button></form></div>`;
+  $('login').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const { error } = await sb.auth.signInWithPassword({ email: $('em').value.trim(), password: $('pw').value });
+    error ? anmeldeMaske('Anmeldung fehlgeschlagen.') : laden();
+  };
+}
+
+function fehler(text) { $('inhalt').innerHTML = `<p class="fehler karte">${esc(text)}</p>`; }
+
+// ---------- Daten ----------
+async function laden() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return anmeldeMaske();
+  const [el, ki] = await Promise.all([sb.from('eltern').select('*'), sb.from('kinder').select('*').order('pos')]);
+  if (el.error || !el.data.length) return fehler('Kein Zugriff für dieses Konto.');
+  S.eltern = el.data.map((e) => e.name);
+  S.kinder = ki.data.map((k) => k.name);
+  S.ich = el.data.find((e) => e.email.toLowerCase() === user.email.toLowerCase())?.name ?? '';
+  S.eintraege = [];
+  for (let von = 0; ; von += 1000) { // Supabase liefert höchstens 1000 Zeilen pro Abfrage
+    const { data, error } = await sb.from('eintraege').select('*').order('id').range(von, von + 999);
+    if (error) return fehler('Laden fehlgeschlagen: ' + error.message);
+    S.eintraege.push(...data);
+    if (data.length < 1000) break;
+  }
+  $('nav').hidden = false; $('neuLaden').hidden = false;
+  zeichnen();
+}
+
+// ---------- Anzeige ----------
+function zeichnen() {
+  $('nav').innerHTML = TABS.map(([k, t, i]) => `<button class="${S.tab === k ? 'aktiv' : ''}" onclick="S.tab='${k}';zeichnen()"><span>${i}</span>${t}</button>`).join('');
+  if (S.tab === 'mehr') return mehr();
+  const neu = `<p><button onclick="formular('${S.tab}')">+ ${NAME[S.tab]} eintragen</button></p>`;
+  let liste = S.eintraege.filter((e) => e.typ === S.tab);
+  let html = '';
+  if (S.tab === 'kontakt') {
+    const ersetzt = new Set(liste.map((e) => e.bezug));
+    liste = liste.filter((e) => !ersetzt.has(e.id) && !nachtraegeVon(e.id).some((n) => n.daten.entfernt));
+    for (const kat of KATEGORIEN) {
+      const k = liste.filter((e) => e.daten.kategorie === kat).sort((a, b) => a.daten.name.localeCompare(b.daten.name));
+      if (k.length) html += `<h2>${esc(kat)}</h2>` + k.map(karte).join('');
+    }
+  } else if (S.tab === 'termin' || S.tab === 'arzttermin') {
+    const jetzt = jetztLokal();
+    const kommend = liste.filter((e) => e.daten.datum >= jetzt.slice(0, 10)).sort((a, b) => a.daten.datum.localeCompare(b.daten.datum));
+    const vorbei = liste.filter((e) => e.daten.datum < jetzt.slice(0, 10)).sort((a, b) => b.daten.datum.localeCompare(a.daten.datum));
+    if (kommend.length) html += '<h2>Anstehend</h2>' + kommend.map(karte).join('');
+    if (vorbei.length) html += '<h2>Vergangen</h2>' + vorbei.map((e) => karte(e, 'vergangen')).join('');
+  } else {
+    html = liste.sort((a, b) => b.daten.datum.localeCompare(a.daten.datum) || b.id - a.id).map(karte).join('');
+  }
+  $('inhalt').innerHTML = neu + (html || '<p class="leer">Noch keine Einträge.</p>');
+  fotosLaden();
+}
+
+function felderHtml(typ, d) {
+  return FELDER[typ].map(([k, label, art]) => {
+    const v = d[k];
+    if (v == null || v === '' || (Array.isArray(v) && !v.length) || ['datum', 'fotos', 'status', 'kategorie'].includes(art)) return '';
+    if (k === 'name' && typ === 'kontakt') return '';
+    const wert = art === 'tel' ? `<a href="tel:${esc(String(v).replace(/[^\d+]/g, ''))}">${esc(v)}</a>`
+      : Array.isArray(v) ? esc(v.join(', ')) : esc(v);
+    return `<p class="feld"><b>${esc(label)}:</b> ${wert}</p>`;
+  }).join('') + fotosHtml(d.fotos);
+}
+
+const fotosHtml = (fotos) => fotos?.length
+  ? `<div class="fotos">${fotos.map((f) => `<a data-foto="${esc(f.pfad)}" target="_blank"><img alt="Foto wird geladen"></a>`).join('')}</div>` : '';
+
+function karte(e, klasse = '') {
+  const d = e.daten;
+  const titel = e.typ === 'kontakt' ? esc(d.name)
+    : e.typ === 'uebergabe' ? `${tagZeit(d.datum)}` : `${tagZeit(d.datum)} · ${esc(d.was || d.arzt || '')}`;
+  const status = letzterStatus(e.id);
+  const nachtraege = nachtraegeVon(e.id).filter((n) => !n.daten.entfernt).map((n) => `<div class="nachtrag">
+      ${n.daten.status ? `<span class="status">${esc(n.daten.status)}</span> ` : ''}<span class="meta">${esc(n.autor)}, ${zeit(n.erstellt)}</span>
+      ${n.daten.text ? `<p class="feld">${esc(n.daten.text)}</p>` : ''}${fotosHtml(n.daten.fotos)}</div>`).join('');
+  const aktionen = e.typ === 'kontakt'
+    ? `<button class="zweit" onclick="formular('kontakt', ${e.id})">Ändern</button><button class="zweit" onclick="entfernen(${e.id})">Entfernen</button>`
+    : `<button class="zweit" onclick="formular('nachtrag', ${e.id})">${e.typ === 'arzttermin' ? 'Ergebnis / Nachtrag' : 'Nachtrag'}</button>`
+      + (e.typ === 'termin' || e.typ === 'arzttermin' ? `<button class="zweit" onclick="kalender(${e.id})">In Kalender</button>` : '');
+  return `<div class="karte ${klasse}"><div class="kopf"><span>${titel}</span>${status ? `<span class="status">${esc(status)}</span>` : ''}</div>
+    <div class="meta">Nr. ${e.id} · eingetragen von ${esc(e.autor)} am ${zeit(e.erstellt)}</div>
+    ${felderHtml(e.typ, d)}${nachtraege}<div class="aktionen">${aktionen}</div></div>`;
+}
+
+async function fotosLaden(wurzel = document) {
+  const links = [...wurzel.querySelectorAll('[data-foto]')];
+  if (!links.length) return;
+  const { data } = await sb.storage.from('fotos').createSignedUrls([...new Set(links.map((a) => a.dataset.foto))], 3600);
+  const urls = Object.fromEntries((data || []).map((x) => [x.path, x.signedUrl]));
+  for (const a of links) {
+    const url = urls[a.dataset.foto];
+    if (url) { a.href = url; a.firstChild.src = url; a.firstChild.alt = 'Foto'; }
+    else a.outerHTML = '<span class="meta">Foto archiviert</span>';
+  }
+}
+
+// ---------- Eintragen ----------
+function eingabe(typ, [k, label, art], alt = {}, bezugTyp) {
+  const v = alt[k] ?? (art === 'elternteil' ? S.eltern.find((n) => n !== S.ich) : undefined);
+  const auswahl = (namen, mehrfach) => `<div class="reihe">${namen.map((n) =>
+    `<label><input type="${mehrfach ? 'checkbox' : 'radio'}" name="${k}" value="${esc(n)}" ${(mehrfach ? (v || []).includes(n) : v === n) ? 'checked' : ''}>${esc(n)}</label>`).join('')}</div>`;
+  const feld = {
+    datum: () => `<input name="${k}" type="datetime-local" required value="${esc(v || jetztLokal())}">`,
+    kinder: () => auswahl(S.kinder, true),
+    elternteil: () => auswahl(S.eltern.filter((n) => n !== S.ich), false),
+    wer: () => auswahl([...S.eltern, 'Beide'], false),
+    kategorie: () => `<select name="${k}">${KATEGORIEN.map((c) => `<option ${c === v ? 'selected' : ''}>${c}</option>`).join('')}</select>`,
+    arzt: () => `<input name="${k}" list="aerzte" value="${esc(v)}"><datalist id="aerzte">${S.eintraege
+      .filter((e) => e.typ === 'kontakt' && e.daten.kategorie === 'Arzt').map((e) => `<option value="${esc(e.daten.name)}">`).join('')}</datalist>`,
+    zeile: () => `<input name="${k}" value="${esc(v)}" ${k === 'name' ? 'required' : ''}>`,
+    tel: () => `<input name="${k}" type="tel" value="${esc(v)}">`,
+    text: () => `<textarea name="${k}">${esc(v)}</textarea>`,
+    status: () => `<select name="${k}"><option value="">–</option>${['erledigt', 'abgesagt', 'verschoben'].map((s) => `<option>${s}</option>`).join('')}</select>`,
+    fotos: () => `<input name="${k}" type="file" accept="image/*" multiple>`,
+  }[art];
+  if (art === 'status' && !['termin', 'arzttermin'].includes(bezugTyp)) return '';
+  const titel = art === 'text' && k === 'text' && bezugTyp === 'arzttermin' ? 'Ergebnis / Befund / Rezept' : label;
+  return `<label>${esc(titel)}</label>${feld()}`;
+}
+
+function formular(typ, bezugId = null) {
+  const bezug = S.eintraege.find((e) => e.id === bezugId);
+  const alt = typ === 'kontakt' && bezug ? bezug.daten : {};
+  const ueberschrift = typ === 'nachtrag' ? `Nachtrag zu Nr. ${bezugId}` : bezug ? `${NAME[typ]} ändern` : `${NAME[typ]} eintragen`;
+  $('dlg').innerHTML = `<form id="f" method="dialog"><h3>${ueberschrift}</h3>
+    ${FELDER[typ].map((f) => eingabe(typ, f, alt, bezug?.typ)).join('')}
+    <p class="meta">Einträge können nachher nicht geändert oder gelöscht werden – nur ergänzt.</p>
+    <p class="fehler" id="fFehler"></p>
+    <div class="aktionen"><button id="fOk">Speichern</button><button type="button" class="zweit" onclick="$('dlg').close()">Abbrechen</button></div></form>`;
+  $('dlg').showModal();
+  $('f').onsubmit = async (ev) => {
+    ev.preventDefault();
+    $('fOk').disabled = true; $('fOk').textContent = 'Speichert …';
+    try {
+      const daten = {};
+      for (const [k, , art] of FELDER[typ]) {
+        const el = $('f').elements[k];
+        if (!el) continue;
+        if (art === 'kinder') daten[k] = [...$('f').querySelectorAll(`[name="${k}"]:checked`)].map((x) => x.value);
+        else if (art === 'fotos') daten[k] = await fotosHochladen(el.files);
+        else if (['elternteil', 'wer'].includes(art)) daten[k] = $('f').querySelector(`[name="${k}"]:checked`)?.value || '';
+        else daten[k] = el.value.trim();
+      }
+      if (typ === 'nachtrag' && !daten.text && !daten.status && !daten.fotos?.length) throw new Error('Bitte etwas eintragen.');
+      await speichern(typ, daten, bezugId);
+      $('dlg').close();
+    } catch (err) {
+      $('fFehler').textContent = err.message;
+      $('fOk').disabled = false; $('fOk').textContent = 'Speichern';
+    }
+  };
+}
+
+async function speichern(typ, daten, bezug = null) {
+  const { error } = await sb.from('eintraege').insert({ typ, daten, bezug });
+  if (error) throw new Error('Speichern fehlgeschlagen: ' + error.message);
+  await laden();
+}
+
+async function entfernen(id) {
+  if (confirm('Kontakt ausblenden? (Bleibt im Verlauf nachvollziehbar.)')) await speichern('nachtrag', { entfernt: true, text: 'Kontakt entfernt' }, id);
+}
+
+// Fotos verkleinern (max. 1600 px, JPEG) – ca. 200 KB statt mehrerer MB. Prüfsumme belegt später archivierte Kopien.
+async function fotosHochladen(dateien) {
+  const ergebnis = [];
+  for (const datei of dateien) {
+    const bild = await createImageBitmap(datei);
+    const f = Math.min(1, 1600 / Math.max(bild.width, bild.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bild.width * f); c.height = Math.round(bild.height * f);
+    c.getContext('2d').drawImage(bild, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.7));
+    const pfad = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}.jpg`;
+    const { error } = await sb.storage.from('fotos').upload(pfad, blob, { contentType: 'image/jpeg', upsert: false });
+    if (error) throw new Error('Foto-Upload fehlgeschlagen: ' + error.message);
+    ergebnis.push({ pfad, sha256: await sha256(await blob.arrayBuffer()) });
+  }
+  return ergebnis;
+}
+
+const sha256 = async (buf) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// ---------- Kalender (.ics öffnet sich im Handy-Kalender, Erinnerung 1 Tag vorher) ----------
+function kalender(id) {
+  const e = S.eintraege.find((x) => x.id === id), d = e.daten;
+  const ics = (dt) => dt.replace(/[-:]/g, '') + '00';
+  const ende = new Date(new Date(d.datum).getTime() + 3600e3);
+  ende.setMinutes(ende.getMinutes() - ende.getTimezoneOffset());
+  const text = (s) => String(s || '').replace(/[\\;,]/g, (c) => '\\' + c).replace(/\n/g, '\\n');
+  const titel = (e.typ === 'arzttermin' ? `Arzt: ${d.arzt}` : d.was) + (d.kinder?.length ? ` (${d.kinder.join(', ')})` : '');
+  const inhalt = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Uebergabebuch//DE', 'BEGIN:VEVENT', `UID:uebergabebuch-${id}`,
+    `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`, `DTSTART:${ics(d.datum)}`, `DTEND:${ics(ende.toISOString().slice(0, 16))}`,
+    `SUMMARY:${text(titel)}`, `LOCATION:${text(d.wo || d.arzt)}`, `DESCRIPTION:${text([d.grund, d.wer && 'Wer: ' + d.wer, d.mit, d.notiz].filter(Boolean).join('\n'))}`,
+    'BEGIN:VALARM', 'TRIGGER:-P1D', 'ACTION:DISPLAY', 'DESCRIPTION:Erinnerung', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+  herunterladen(new Blob([inhalt], { type: 'text/calendar' }), `termin-${id}.ics`);
+}
+
+function herunterladen(blob, name) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ---------- Mehr: Prüfung, Speicher, Export ----------
+async function mehr() {
+  $('inhalt').innerHTML = `<div class="karte"><b>Angemeldet als ${esc(S.ich)}</b>
+    <div class="aktionen"><button class="zweit" onclick="passwort()">Passwort ändern</button><button class="zweit" onclick="abmelden()">Abmelden</button></div></div>
+    <div class="karte"><b>Echtheits-Prüfung</b><p id="kette" class="meta">Prüfe …</p></div>
+    <div class="karte"><b>Foto-Speicher</b><p id="speicher" class="meta">…</p></div>
+    <div class="karte"><b>Sichern & Drucken</b><p class="meta">Archiv = alle Einträge + Fotos als ZIP. Drucken = alles als PDF (z. B. für Jugendamt oder Gericht).</p>
+    <div class="aktionen"><button onclick="archiv(this)">Archiv herunterladen</button><button class="zweit" onclick="drucken()">Alles drucken / PDF</button></div></div>`;
+  const [k, sp] = await Promise.all([sb.rpc('kette_pruefen'), sb.rpc('speicher_belegt')]);
+  const letzter = S.eintraege.at(-1);
+  $('kette').innerHTML = k.error ? 'Prüfung fehlgeschlagen.'
+    : k.data == null ? `✅ Alle ${S.eintraege.length} Einträge unverändert.<br>Aktueller Fingerabdruck: <b>${esc(letzter?.hash.slice(0, 16) ?? '–')}</b> (Nr. ${letzter?.id ?? '–'})<br>Tipp: ab und zu einen Screenshot davon machen.`
+    : `<span class="fehler">⚠️ Eintrag Nr. ${esc(k.data)} wurde nachträglich verändert!</span>`;
+  const proz = Math.round(100 * (sp.data || 0) / SPEICHER_GRENZE);
+  $('speicher').innerHTML = `${((sp.data || 0) / 1024 ** 2).toFixed(1)} MB von 1024 MB belegt (${proz} %)`
+    + (proz >= 80 ? '<br><span class="fehler">Fast voll: Bitte beide ein Archiv herunterladen, dann alte Fotos laut Anleitung entfernen.</span>' : '');
+}
+
+async function passwort() {
+  const pw = prompt('Neues Passwort (mindestens 8 Zeichen):');
+  if (!pw) return;
+  if (pw.length < 8) return alert('Zu kurz.');
+  const { error } = await sb.auth.updateUser({ password: pw });
+  alert(error ? 'Fehler: ' + error.message : 'Passwort geändert.');
+}
+
+async function abmelden() { await sb.auth.signOut(); anmeldeMaske(); }
+
+async function archiv(knopf) {
+  knopf.disabled = true; knopf.textContent = 'Erstellt Archiv …';
+  try {
+    const zip = new JSZip();
+    zip.file('eintraege.json', JSON.stringify(S.eintraege, null, 2));
+    const pfade = S.eintraege.flatMap((e) => (e.daten.fotos || []).map((f) => f.pfad));
+    for (const pfad of pfade) {
+      const { data } = await sb.storage.from('fotos').download(pfad);
+      if (data) zip.file('fotos/' + pfad, data);
+    }
+    herunterladen(await zip.generateAsync({ type: 'blob' }), `uebergabebuch-${new Date().toISOString().slice(0, 10)}.zip`);
+  } finally { knopf.disabled = false; knopf.textContent = 'Archiv herunterladen'; }
+}
+
+function drucken() {
+  const haupt = S.eintraege.filter((e) => e.typ !== 'nachtrag').sort((a, b) => a.id - b.id);
+  $('druck').innerHTML = `<h1>Übergabebuch – Stand ${zeit(new Date())}</h1>
+    <p>${S.eintraege.length} Einträge, letzter Fingerabdruck: ${esc(S.eintraege.at(-1)?.hash ?? '–')}</p>`
+    + haupt.map((e) => `<h3>${NAME[e.typ]}</h3>` + karte(e)).join('');
+  $('druck').querySelectorAll('.aktionen').forEach((x) => x.remove());
+  fotosLaden($('druck')).then(() => setTimeout(() => window.print(), 800));
+}
+
+start();
+</script>
+</body>
+</html>
