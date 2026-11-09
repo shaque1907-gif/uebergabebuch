@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#2f6f5e">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Übergabebuch</title>
 <style>
   :root { --bg:#f4f6f5; --karte:#fff; --text:#1d2522; --leise:#66736e; --akzent:#2f6f5e; --rand:#dde3e0; --warn:#b3541e; }
@@ -63,6 +65,7 @@
 // geschützt wird alles durch die Regeln in setup.sql.
 const KONFIG = { url: 'https://iikqnlmqcwewkoughfld.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa3FubG1xY3dld2tvdWdoZmxkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM2MzU2OTYsImV4cCI6MjEwOTIxMTY5Nn0.HyC6g0WAw39qHsOyQZkyxoqpoAc1a4M3rVWmLDRUeCo' };
 const SPEICHER_GRENZE = 1024 ** 3; // 1 GB im kostenlosen Tarif
+const VAPID_PUBLIC = 'BEH1Gj4Bal9ElsL2q5i5khdOXJDPzJ2K5s4n9DXVogDBsONflF0ji3zqNettNIJD39hl1S2gjTUqtK6v2n1codQ'; // öffentlicher Push-Schlüssel
 
 const sb = window.supabase?.createClient(KONFIG.url, KONFIG.key);
 const S = { tab: 'uebergabe', eltern: [], kinder: [], eintraege: [], ich: '' };
@@ -75,7 +78,8 @@ const NAME = { uebergabe: 'Übergabe', termin: 'Termin', arzttermin: 'Arzttermin
 const KATEGORIEN = ['Arzt', 'Eltern von Freunden', 'Schule / Kita', 'Sonstiges'];
 // [schlüssel, beschriftung, art] – art: datum | kinder | elternteil | wer | kategorie | zeile | tel | text | status | fotos
 const FELDER = {
-  uebergabe: [['datum', 'Datum & Uhrzeit', 'datum'], ['kinder', 'Kinder', 'kinder'], ['an', 'Übergeben an', 'elternteil'],
+  // Übergabe ohne Datumsfeld: die Zeit setzt der Server beim Speichern
+  uebergabe: [['kinder', 'Kinder', 'kinder'], ['an', 'Übergeben an', 'elternteil'],
     ['gesundheit', 'Gesundheit / Medikamente', 'text'], ['schule', 'Schule / Kita', 'text'], ['sachen', 'Mitgegebene Sachen', 'text'],
     ['termine', 'Anstehende Termine / Verabredungen', 'text'], ['notiz', 'Sonstiges', 'text'], ['fotos', 'Fotos', 'fotos']],
   termin: [['datum', 'Datum & Uhrzeit', 'datum'], ['kinder', 'Kinder', 'kinder'], ['was', 'Was (z. B. Verabredung, Geburtstag)', 'zeile'],
@@ -98,6 +102,7 @@ const letzterStatus = (id) => nachtraegeVon(id).map((n) => n.daten.status).filte
 // ---------- Anmeldung ----------
 async function start() {
   if (!sb) return fehler('Verbindung zur Datenbank fehlt (Internet?).');
+  navigator.serviceWorker?.register('sw.js').catch(() => {}); // für Push-Nachrichten
   const { data } = await sb.auth.getSession();
   data.session ? laden() : anmeldeMaske();
 }
@@ -158,7 +163,7 @@ function zeichnen() {
     if (kommend.length) html += '<h2>Anstehend</h2>' + kommend.map(karte).join('');
     if (vorbei.length) html += '<h2>Vergangen</h2>' + vorbei.map((e) => karte(e, 'vergangen')).join('');
   } else {
-    html = liste.sort((a, b) => b.daten.datum.localeCompare(a.daten.datum) || b.id - a.id).map(karte).join('');
+    html = liste.sort((a, b) => b.id - a.id).map(karte).join('');
   }
   $('inhalt').innerHTML = neu + (html || '<p class="leer">Noch keine Einträge.</p>');
   fotosLaden();
@@ -181,7 +186,7 @@ const fotosHtml = (fotos) => fotos?.length
 function karte(e, klasse = '') {
   const d = e.daten;
   const titel = e.typ === 'kontakt' ? esc(d.name)
-    : e.typ === 'uebergabe' ? `${tagZeit(d.datum)}` : `${tagZeit(d.datum)} · ${esc(d.was || d.arzt || '')}`;
+    : e.typ === 'uebergabe' ? tagZeit(e.erstellt) : `${tagZeit(d.datum)} · ${esc(d.was || d.arzt || '')}`;
   const status = letzterStatus(e.id);
   const nachtraege = nachtraegeVon(e.id).filter((n) => !n.daten.entfernt).map((n) => `<div class="nachtrag">
       ${n.daten.status ? `<span class="status">${esc(n.daten.status)}</span> ` : ''}<span class="meta">${esc(n.autor)}, ${zeit(n.erstellt)}</span>
@@ -236,6 +241,7 @@ function formular(typ, bezugId = null) {
   const alt = typ === 'kontakt' && bezug ? bezug.daten : {};
   const ueberschrift = typ === 'nachtrag' ? `Nachtrag zu Nr. ${bezugId}` : bezug ? `${NAME[typ]} ändern` : `${NAME[typ]} eintragen`;
   $('dlg').innerHTML = `<form id="f" method="dialog"><h3>${ueberschrift}</h3>
+    ${typ === 'uebergabe' ? '<p class="meta">Datum und Uhrzeit werden beim Speichern automatisch gesetzt (jetzt).</p>' : ''}
     ${FELDER[typ].map((f) => eingabe(typ, f, alt, bezug?.typ)).join('')}
     <p class="meta">Einträge können nachher nicht geändert oder gelöscht werden – nur ergänzt.</p>
     <p class="fehler" id="fFehler"></p>
@@ -318,10 +324,12 @@ function herunterladen(blob, name) {
 async function mehr() {
   $('inhalt').innerHTML = `<div class="karte"><b>Angemeldet als ${esc(S.ich)}</b>
     <div class="aktionen"><button class="zweit" onclick="passwort()">Passwort ändern</button><button class="zweit" onclick="abmelden()">Abmelden</button></div></div>
+    <div class="karte"><b>Benachrichtigungen</b><p id="push" class="meta">…</p><div class="aktionen" id="pushKnoepfe"></div></div>
     <div class="karte"><b>Echtheits-Prüfung</b><p id="kette" class="meta">Prüfe …</p></div>
     <div class="karte"><b>Foto-Speicher</b><p id="speicher" class="meta">…</p></div>
     <div class="karte"><b>Sichern & Drucken</b><p class="meta">Archiv = alle Einträge + Fotos als ZIP. Drucken = alles als PDF (z. B. für Jugendamt oder Gericht).</p>
     <div class="aktionen"><button onclick="archiv(this)">Archiv herunterladen</button><button class="zweit" onclick="drucken()">Alles drucken / PDF</button></div></div>`;
+  pushStatus();
   const [k, sp] = await Promise.all([sb.rpc('kette_pruefen'), sb.rpc('speicher_belegt')]);
   const letzter = S.eintraege.at(-1);
   $('kette').innerHTML = k.error ? 'Prüfung fehlgeschlagen.'
@@ -330,6 +338,53 @@ async function mehr() {
   const proz = Math.round(100 * (sp.data || 0) / SPEICHER_GRENZE);
   $('speicher').innerHTML = `${((sp.data || 0) / 1024 ** 2).toFixed(1)} MB von 1024 MB belegt (${proz} %)`
     + (proz >= 80 ? '<br><span class="fehler">Fast voll: Bitte beide ein Archiv herunterladen, dann alte Fotos laut Anleitung entfernen.</span>' : '');
+}
+
+// ---------- Push: Nachricht "X hat etwas eingetragen" an den jeweils anderen Elternteil ----------
+async function pushStatus() {
+  const text = $('push'), knoepfe = $('pushKnoepfe');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    text.textContent = 'Auf dem iPhone: die App zuerst über Teilen → „Zum Home-Bildschirm“ installieren und von dort öffnen.';
+    knoepfe.innerHTML = '';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    text.textContent = 'Benachrichtigungen sind in den Handy-Einstellungen für diese App blockiert.';
+    knoepfe.innerHTML = '';
+    return;
+  }
+  const abo = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (abo) await sb.from('push_abos').upsert({ endpoint: abo.endpoint, abo: abo.toJSON() }); // hält die Anmeldung aktuell
+  text.textContent = abo ? '🔔 Eingeschaltet – du bekommst eine Nachricht, wenn etwas Neues eingetragen wird.' : 'Ausgeschaltet.';
+  knoepfe.innerHTML = abo
+    ? '<button class="zweit" onclick="pushTest(this)">Test-Nachricht an mich</button><button class="zweit" onclick="pushAus()">Ausschalten</button>'
+    : '<button onclick="pushAn()">Einschalten</button>';
+}
+
+async function pushAn() {
+  if (await Notification.requestPermission() !== 'granted') return pushStatus();
+  try {
+    const schluessel = Uint8Array.from(atob(VAPID_PUBLIC.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+    const abo = await (await navigator.serviceWorker.ready).pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: schluessel });
+    const { error } = await sb.from('push_abos').upsert({ endpoint: abo.endpoint, abo: abo.toJSON() });
+    if (error) throw error;
+  } catch (err) { alert('Einschalten fehlgeschlagen: ' + err.message); }
+  pushStatus();
+}
+
+async function pushAus() {
+  const abo = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (abo) { await sb.from('push_abos').delete().eq('endpoint', abo.endpoint); await abo.unsubscribe(); }
+  pushStatus();
+}
+
+async function pushTest(knopf) {
+  knopf.disabled = true;
+  // Header = anon-Schlüssel (besteht Supabases JWT-Prüfung), eigener Login im Inhalt – die Funktion prüft ihn selbst.
+  const token = (await sb.auth.getSession()).data.session?.access_token;
+  const { error } = await sb.functions.invoke('push', { body: { test: true, token }, headers: { Authorization: 'Bearer ' + KONFIG.key } });
+  knopf.disabled = false;
+  if (error) alert('Test fehlgeschlagen: ' + error.message);
 }
 
 async function passwort() {
